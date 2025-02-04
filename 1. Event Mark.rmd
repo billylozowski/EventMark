@@ -1,0 +1,249 @@
+
+# This code event marks throwing trials / calculates "Arm Path", "BR Timing", "Max Shoulder H Abd Velocity" between BFC & BR, and "Phase Durations"
+
+```{r Load in the desired file, and add additional columns}
+# Select the file to import
+file_path <- file.choose()
+
+# Read the data
+data <- read.delim(file_path, header = TRUE, skip = 8, check.names = FALSE)
+file_name <- tools::file_path_sans_ext(basename(file_path))
+
+# Remove column the last column as it's empty
+library(dplyr)
+data <- data %>%
+  select(! 51)
+
+# Define sampling rate (Hz)
+SampleRate <- 100 # change as necessary
+
+# Create and events column and populate with 0s
+data$Events <- 0
+
+# Create the column "Time (s)" (divide by sampling rate)
+data$`Time (s)` <- data$`Sample #` / SampleRate
+
+# Create the column "Stride Length (% Height)
+data$`Stride Length (% Height)` <- data$`Stride Length (X)` / data$Height
+
+# Add a File Name column
+data$`File Name` <- file_name
+```
+
+# EVENT MARKING...
+
+```{r Index Front Foot Contact (FFC) - using force plate data}
+# find the first instance where FFC exceeds specified threshold
+FFC_index <- which(data$`Event - FFC` > 20)[1] # adjust threshold as necessary
+
+```
+
+```{r Index Front Foot Contact (FFC) - without force plate data, use this chunk by removing, eval = FALSE}
+max_FFC_index <- which.max(data$`Event - FFC`) # find the highest value in Event - FFC
+
+FFC_data <- data[max_FFC_index:nrow(data), ] # subset the data from the peak to the end
+
+FFC_index <- which(FFC_data$`Event - FFC` < 1 & !is.na(FFC_data$`Event - FFC`))[1] # find the first instance where the value drops below 1
+
+FFC_index <- max_FFC_index + FFC_index - 1 # adjust the index to the original data frame
+
+rm(FFC_data)
+
+```
+
+```{r Index Back Foot Contact (BFC) - first from where BFC1 crosses from negative to positive, AFTER BFC2!, eval = FALSE}
+# BFC1 - ankle acceleration in the Y (vertical) | BFC2 - ankle velocity in the X (anteroposterior)
+
+# Subset the data frame from the start to FFC_index
+subset_data_BFC2 <- data[1:FFC_index, ]
+
+# Find the index of the maximum value in "Event - BFC2" within the subsetted data
+BFC2_index <- which.max(ifelse(is.na(subset_data_BFC2$`Event - BFC2`), -Inf, subset_data_BFC2$`Event - BFC2`))
+
+# Subset the data frame from the maximum BFC_1 index to the end (may be better to FFC_index)
+subset_data_BFC1 <- data[(BFC2_index + 1):nrow(data), ]
+
+# Find the first occurrence where BFC1 goes from negative to positive
+BFC1_index <- which.max(diff(sign(subset_data_BFC1$`Event - BFC1`) > 0))
+
+# Calculate the overall index in the original data frame
+BFC_index <- BFC2_index + BFC1_index
+
+rm(BFC2_index, BFC1_index, subset_data_BFC1, subset_data_BFC2)
+```
+
+```{r Index Maximum Arm Withdrawal (MAW)}
+# Find where the arm is most withdrawn behind the trunk (minimum value)
+MAW_index <- which(data$`Event - MAW` == min(data$`Event - MAW`, na.rm = TRUE))[1]
+
+```
+
+```{r Index Ball Release (BR)}
+# Find where the hand's velocity (X) peaks
+BR_index <- which(data$`Hand COM Velocity (X)` == max(data$`Hand COM Velocity (X)`, na.rm = TRUE))[1]
+
+```
+
+```{r Index End of Follow-Through (EFT) - most posterior position of the hand's COM (X) after BR}
+# Check if ball release has occurred
+if (!is.na(BR_index) && BR_index < nrow(data)) {
+  # Subset the data from ball release to ball release +100
+  subset_data <- data[(BR_index + 10):(BR_index + 50), ]
+
+  # Find the index of the row where FT is at its smallest in the subset
+  EFT_index <- which(subset_data$`Event - EFT` == min(subset_data$`Event - EFT`, na.rm = TRUE))[1]
+  
+}
+
+EFT_index <- (BR_index + 10) + EFT_index # determine event index in full data frame
+```
+
+```{r Mark each event index in "data" with a '1'}
+# Mark BFC_index with '1'
+if (!is.na(BFC_index)) {
+  data$Events[BFC_index +1] <- 1
+}
+
+# Mark FFC_index with '1'
+if (!is.na(FFC_index)) {
+  data$Events[FFC_index] <- 1
+}
+
+# Mark MAW_index + 1 with '1'
+if (!is.na(MAW_index) && MAW_index < nrow(data)) {
+  data$Events[MAW_index] <- 1
+}
+
+# Mark BR_index + 1 with '1'
+if (!is.na(BR_index) && BR_index < nrow(data)) {
+  data$Events[BR_index + 1] <- 1
+}
+
+# Mark EFT_index + 1 with '1'
+if (!is.na(EFT_index)) {
+    data$Events[EFT_index] <- 1
+}
+
+# Check the number of marked events
+sum(data$Events)
+
+```
+
+```{r}
+# Calculate the range between BFC_index and EFT_index
+range <- EFT_index - BFC_index + 1 # change this to EFT for reports
+
+# Calculate the percentage for each sample
+data$`Duration (%)` <- 100 * (data$`Sample #` - BFC_index + 1) / range
+
+# Move the 'Events column to the first position and 'Time (s)' to the second position
+library(dplyr)
+data <- data %>% 
+  select(`File Name`, Events, `Time (s)`, `Sample #`, `Duration (%)`, Height, Mass, `Stride Length (% Height)`, everything())
+
+rm(SampleRate)
+
+```
+
+```{r Save the Event Marked trial as a .csv file}
+# Specify the folder to save the data to
+output_folder <- "C:/Users/billy/OneDrive/Documents/Auburn/Sports Medicine & Movement Lab/PhD Thesis/Data/Main Study/KOT - Event Marked Trials"
+
+# Create the folder if it doesn't exist
+dir.create(output_folder, showWarnings = FALSE)
+
+new_file_path <- file.path(output_folder, paste0(file_name, ".csv"))
+
+# Save 'data' as a tab-delimited text file, overwriting the original .txt file
+write.csv(data, file = new_file_path, row.names = FALSE)
+
+# Print a confirmation message
+print(paste("Data saved to:", new_file_path))
+
+```
+ 
+```{r Extract data at each event}
+# Create a list of indices and corresponding names
+event_indices <- list(
+  BFC = BFC_index,
+  FFC = FFC_index,
+  MAW = MAW_index,
+  BR = BR_index,
+  EFT = EFT_index)
+
+# Create 'at_events' data frame
+at_events <- data.frame(Event = character(0), stringsAsFactors = FALSE)
+
+# Populate 'at_events' with index names and corresponding rows
+for (event_type in names(event_indices)) {
+  index <- event_indices[[event_type]]
+  if (!is.na(index)) {
+    row_data <- data[index, ]
+    row_data$Event <- event_type
+    at_events <- rbind(at_events, row_data)
+  }
+}
+
+# Reorder columns to have 'Event' as the first column
+at_events <- at_events[, c("Event", setdiff(names(at_events), "Event"))]
+
+# Remove Event and KS columns from final output
+at_events <- at_events %>%
+  select(-Events, -Mass, -`Event - BFC1`, -`Event - BFC2`, 
+         -`Event - FFC`, -`Event - MAW`, -`Event - BR`, -`Event - EFT`) %>%
+  select(`File Name`, everything())
+
+# # Add a column with the file's name
+# at_events <- cbind(`File Name` = file_name, at_events)
+
+print(at_events)
+
+```
+ 
+```{r Calculate minimum and maximum values for each column in 'data'}
+min_values <- sapply(data, min, na.rm = TRUE)
+max_values <- sapply(data, max, na.rm = TRUE)
+
+# Create 'MinMax' data frame with min and max values
+MinMax <- data.frame(rbind(min_values, max_values), check.names = FALSE)
+rownames(MinMax) <- NULL # Remove row names
+
+# Add a column with labels "min" and "max"
+MinMax$Event <- c("Min", "Max")
+
+# Add a column with the trial name
+MinMax$`File Name` <- file_name
+
+# Reorder columns to match the original 'data' data frame
+MinMax <- MinMax %>%
+  select(`File Name`, Event, everything())
+
+# Remove Event columns
+MinMax <- MinMax %>%
+  select(-Events, -Mass, -`Event - BFC1`, -`Event - BFC2`, 
+         -`Event - FFC`, -`Event - MAW`, -`Event - BR`, -`Event - EFT`)
+
+# Add minimum and maximum values to bottom of 'at_events' data frame
+at_events <- rbind(at_events, MinMax)
+
+rm(max_values, min_values, MinMax)
+
+print(at_events)
+
+```
+
+```{r Save at_events to the "KOT - Event Data" folder as the file name}
+# Save 'at_events' as a CSV file in the folder "Event Data"
+
+# Specify the folder to save the data to
+output_folder <- "C:/Users/billy/OneDrive/Documents/Auburn/Sports Medicine & Movement Lab/PhD Thesis/Data/Main Study/KOT - Event Data"
+
+# Create the folder if it doesn't exist
+dir.create(output_folder, showWarnings = FALSE)
+
+write.csv(at_events, file = file.path(output_folder, paste0(file_name, " (at events).csv")), row.names = FALSE)
+
+# Print a confirmation message
+print(at_events[, 1:3])
+
+```
